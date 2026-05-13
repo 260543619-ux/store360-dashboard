@@ -280,9 +280,12 @@ con = get_connection()
 @st.cache_data(ttl=300)
 def get_store_list():
     q = """SELECT store_unicode, shop_name, shop_sn, city_name, province_name,
-           city_level, shop_group, trade_channel, COALESCE(store_roi, 0) AS roi,
+           COALESCE(city_level_label, '—') AS city_level,
+           COALESCE(shop_group_label, '—') AS shop_group,
+           COALESCE(trade_channel_label, '—') AS trade_channel,
+           COALESCE(store_roi, 0) AS roi,
            COALESCE(total_expenses, 0) AS total_expenses,
-           COALESCE(total_achieved_amount, 0) AS total_sales
+           COALESCE(detail_total_money, 0) AS total_sales
            FROM v_store_metrics ORDER BY total_expenses DESC"""
     return con.execute(q).df()
 
@@ -466,13 +469,14 @@ with tabs[0]:
                  sub=f"工资 {format_money(overview['total_wages'])} · 奖金 {format_money(overview['total_bonuses'])}",
                  accent=DIM_COLORS["expense"])
     with col2:
-        kpi_card("累计达成销售额", format_money(overview['total_achieved_amount']),
-                 sub=f"排班执行销量 {format_money(overview['exec_brand_sales'])}",
+        detail_sales = overview['detail_total_money']
+        kpi_card("累计销售额", format_money(detail_sales),
+                 sub=f"费用达成金额 {format_money(overview['total_achieved_amount'])}",
                  accent=DIM_COLORS["sales"])
     with col3:
-        roi_val = overview['store_roi']
-        kpi_card("整体 ROI", f"{roi_val:.1f}×" if roi_val and roi_val > 0 else "—",
-                 sub="每投入 ¥1 的销售额产出",
+        detail_roi = overview['detail_roi'] or overview['store_roi']
+        kpi_card("整体 ROI", f"{detail_roi:.1f}×" if detail_roi and detail_roi > 0 else "—",
+                 sub="销售额 / 投入费用",
                  accent=DIM_COLORS["roi"])
     with col4:
         kpi_card("参与项目 / 计划数", f"{overview['plan_project_count']}",
@@ -501,9 +505,10 @@ with tabs[0]:
         st.markdown("#### 门店档案")
         info_items = [
             ("MU", overview.get('mu', '—')), ("RU", overview.get('ru', '—')),
-            ("AU", overview.get('au', '—')), ("城市等级", overview.get('city_level', '—')),
-            ("店群", overview.get('shop_group', '—')), ("贸易渠道", overview.get('trade_channel', '—')),
-            ("客户集群", overview.get('customer_cluster', '—')),
+            ("AU", overview.get('au', '—')), ("城市等级", overview.get('city_level_label', '—')),
+            ("店群", overview.get('shop_group_label', '—')), ("贸易渠道", overview.get('trade_channel_label', '—')),
+            ("客户集群", overview.get('customer_cluster_label', '—')),
+            ("Account", overview.get('account_label', '—')),
             ("Top 店", "是" if overview.get('is_top') == 1 else "否"),
             ("GPS 范围", f"{overview.get('check_range','—')}m"),
         ]
@@ -534,8 +539,9 @@ with tabs[0]:
             kpi_card("投入对比", format_money(overview['total_expenses']),
                      sub=f"同行均 {format_money(peer_avg_expense)}", accent=DIM_COLORS["expense"])
         with cm3:
-            peer_avg_sales = peer_stores['total_achieved_amount'].dropna().mean()
-            kpi_card("销售对比", format_money(overview['total_achieved_amount']),
+            my_sales = overview['detail_total_money'] or overview['total_achieved_amount']
+            peer_avg_sales = peer_stores['detail_total_money'].dropna().mean()
+            kpi_card("销售对比", format_money(my_sales),
                      sub=f"同行均 {format_money(peer_avg_sales)}", accent=DIM_COLORS["sales"])
         with cm4:
             peer_avg_checkin = peer_stores['checkin_rate'].dropna().mean()
@@ -596,9 +602,10 @@ with tabs[1]:
 with tabs[2]:
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        kpi_card("累计达成销售额", format_money(overview['total_achieved_amount']), accent=DIM_COLORS["sales"])
+        kpi_card("累计销售额", format_money(overview['detail_total_money']), accent=DIM_COLORS["sales"])
     with col2:
-        kpi_card("排班执行销量", format_money(overview['exec_brand_sales']), accent="#10B981")
+        kpi_card("销量(件数)", f"{overview['detail_total_qty']:,}",
+                 sub=f"{overview['detail_total_volumes']:,} 体积单位", accent="#10B981")
     with col3:
         daily = overview['daily_avg_sales']
         kpi_card("有效场次天数", f"{overview['total_session_days']:,} 天",
@@ -649,13 +656,14 @@ with tabs[2]:
 with tabs[3]:
     col1, col2, col3 = st.columns(3)
     with col1:
-        kpi_card("门店 ROI", f"{overview['store_roi']:.1f}×" if overview['store_roi'] and overview['store_roi'] > 0 else "—",
+        d_roi = overview['detail_roi'] or overview['store_roi']
+        kpi_card("门店 ROI", f"{d_roi:.1f}×" if d_roi and d_roi > 0 else "—",
                  sub="销售额 / 投入费用", accent=DIM_COLORS["roi"])
     with col2:
-        cost_eff = overview['total_achieved_amount'] / overview['total_session_days'] if overview['total_session_days'] > 0 else 0
+        cost_eff = overview['detail_total_money'] / overview['total_session_days'] if overview['total_session_days'] > 0 else 0
         kpi_card("场次日均产出", format_money(cost_eff), accent="#06B6D4")
     with col3:
-        labor_eff = overview['total_achieved_amount'] / overview['total_wages'] if overview['total_wages'] > 0 else 0
+        labor_eff = overview['detail_total_money'] / overview['total_wages'] if overview['total_wages'] > 0 else 0
         kpi_card("工资投产比", f"{labor_eff:.1f}×", sub="销售额 / 工资", accent=DIM_COLORS["project"])
 
     st.markdown('<div style="height:8px;"></div>', unsafe_allow_html=True)
@@ -701,15 +709,18 @@ with tabs[4]:
     st.caption("综合评分：ROI(40%) + 销售绝对值(25%) + 执行质量(20%) + 稳定性(10%) + 同行参照(5%)")
 
     if len(brand_metrics) > 0:
-        valid = brand_metrics.dropna(subset=['roi', 'cost_sales']).copy()
+        # Use detail_roi and detail_sales for richer scoring
+        brand_metrics['_roi'] = brand_metrics['detail_roi'].fillna(brand_metrics['roi'])
+        brand_metrics['_sales'] = brand_metrics['detail_sales'].fillna(brand_metrics['cost_sales'])
+        valid = brand_metrics.dropna(subset=['_roi', '_sales']).copy()
         if len(valid) > 0:
-            for col_name in ['roi', 'cost_sales', 'session_days']:
+            for col_name in ['_roi', '_sales', 'session_days']:
                 std = valid[col_name].std()
                 valid[f'{col_name}_norm'] = (valid[col_name] - valid[col_name].min()) / (valid[col_name].max() - valid[col_name].min()) if std > 0 else 0.5
             valid['consistency_norm'] = valid['session_days_norm']
             exec_score = overview['checkin_rate'] / 100 if overview['checkin_rate'] else 0.5
             task_score = overview['task_pass_rate'] / 100 if overview['task_pass_rate'] else 0.5
-            valid['综合得分'] = (0.40 * valid['roi_norm'] + 0.25 * valid['cost_sales_norm'] +
+            valid['综合得分'] = (0.40 * valid['_roi_norm'] + 0.25 * valid['_sales_norm'] +
                                0.20 * (exec_score + task_score) / 2 + 0.10 * valid['consistency_norm'] + 0.05 * 0.5)
             valid['综合得分'] = (valid['综合得分'] * 100).round(1)
             valid = valid.sort_values('综合得分', ascending=False)
@@ -718,7 +729,7 @@ with tabs[4]:
             col_r1, col_r2 = st.columns([2, 1])
             with col_r1:
                 st.markdown("##### 品牌投资推荐排名")
-                rec = valid[['brand_name', 'activity_type', 'roi', 'cost_sales', 'total_expenses', '综合得分']].head(8)
+                rec = valid[['brand_name', 'activity_type', '_roi', '_sales', 'total_expenses', '综合得分']].head(8)
                 rec.columns = ['品牌', '活动类型', 'ROI', '销售额', '投入费用', '得分']
                 st.dataframe(rec, use_container_width=True, hide_index=True,
                            column_config={'ROI': st.column_config.NumberColumn(format="%.1f×"),
@@ -729,8 +740,8 @@ with tabs[4]:
                 best = valid.iloc[0]
                 kpi_card("🏆 首选品牌", best['brand_name'], sub=f"综合得分 {best['综合得分']:.0f} 分", accent="#F59E0B")
                 kpi_card("推荐活动类型", best['activity_type'] if pd.notna(best['activity_type']) else "综合", accent=DIM_COLORS["roi"])
-                kpi_card("历史 ROI", f"{best['roi']:.1f}×", accent=DIM_COLORS["sales"])
-                kpi_card("历史销售额", format_money(best['cost_sales']), accent=DIM_COLORS["project"])
+                kpi_card("历史 ROI", f"{best['_roi']:.1f}×", accent=DIM_COLORS["sales"])
+                kpi_card("历史销售额", format_money(best['_sales']), accent=DIM_COLORS["project"])
 
             st.markdown('<div style="height:8px;"></div>', unsafe_allow_html=True)
             st.markdown("##### 陈列与促销员建议")
@@ -829,8 +840,9 @@ with tabs[6]:
     if query_type == "门店关键指标":
         limit = st.slider("显示条数", 100, 5000, 500, 100)
         data = con.execute(f"""
-            SELECT shop_name AS 门店, city_name AS 城市, province_name AS 省份, city_level AS 城市等级,
-                   total_expenses AS 总投入, total_achieved_amount AS 总销售, store_roi AS ROI,
+            SELECT shop_name AS 门店, city_name AS 城市, province_name AS 省份,
+                   COALESCE(city_level_label, '—') AS 城市等级,
+                   total_expenses AS 总投入, detail_total_money AS 总销售, store_roi AS ROI,
                    total_session_days AS 有效天数, checkin_rate AS 出勤率, task_pass_rate AS 任务通过率
             FROM v_store_metrics WHERE total_expenses > 0 ORDER BY total_expenses DESC LIMIT {limit}
         """).df()
