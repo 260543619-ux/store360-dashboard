@@ -339,8 +339,8 @@ def get_peer_stores_for_benchmark(store_unicode):
         return pd.DataFrame()
     cl, sg, tc = info
     q2 = """SELECT store_unicode, shop_name, city_name, store_roi, total_expenses,
-            total_achieved_amount, total_session_days, checkin_rate, task_pass_rate,
-            avg_display_area
+            total_achieved_amount, detail_total_money, total_session_days,
+            checkin_rate, task_pass_rate, avg_display_area
             FROM v_store_metrics
             WHERE city_level = ? AND shop_group = ? AND store_unicode != ?
             AND total_expenses > 0 LIMIT 100"""
