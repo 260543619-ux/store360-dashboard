@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environment
+venv/
+/tmp/venv_excel/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Large data (tracked by Git LFS)
+# *.duckdb tracked via LFS
+# *.xlsx tracked via LFS for files > 100MB
