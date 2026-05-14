@@ -271,6 +271,12 @@ pio.templates["linear_dark"] = go.layout.Template(
 pio.templates.default = "linear_dark"
 
 # ============ DB CONNECTION ============
+import os as _os
+if not _os.path.exists(DB_PATH):
+    st.error(f"数据库文件未找到: {DB_PATH}")
+    st.info("请确认 Git LFS 已正确拉取 store360.duckdb 文件（约480MB）。在 Streamlit Cloud 的 Manage App 页面点击 'Reboot app'。")
+    st.stop()
+
 @st.cache_resource
 def get_connection():
     return duckdb.connect(DB_PATH, read_only=True)
