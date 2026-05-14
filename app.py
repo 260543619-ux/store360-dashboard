@@ -273,17 +273,9 @@ pio.templates.default = "linear_dark"
 # ============ DB CONNECTION ============
 @st.cache_resource
 def get_connection():
-    try:
-        return duckdb.connect(DB_PATH, read_only=True)
-    except Exception as e:
-        st.error(f"数据库连接失败: {e}")
-        st.info("请确认 store360.duckdb 文件已通过 Git LFS 正确下载。")
-        st.stop()
+    return duckdb.connect(DB_PATH, read_only=True)
 
-try:
-    con = get_connection()
-except Exception:
-    st.stop()
+con = get_connection()
 
 # ============ DATA LOADING FUNCTIONS ============
 @st.cache_data(ttl=300)
