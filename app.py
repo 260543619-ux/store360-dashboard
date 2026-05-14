@@ -273,9 +273,17 @@ pio.templates.default = "linear_dark"
 # ============ DB CONNECTION ============
 @st.cache_resource
 def get_connection():
-    return duckdb.connect(DB_PATH, read_only=True)
+    try:
+        return duckdb.connect(DB_PATH, read_only=True)
+    except Exception as e:
+        st.error(f"数据库连接失败: {e}")
+        st.info("请确认 store360.duckdb 文件已通过 Git LFS 正确下载。")
+        st.stop()
 
-con = get_connection()
+try:
+    con = get_connection()
+except Exception:
+    st.stop()
 
 # ============ DATA LOADING FUNCTIONS ============
 @st.cache_data(ttl=300)
@@ -631,8 +639,11 @@ def ai_summary_promoter(s):
 </div></div>"""
 
 def ai_summary_project(s):
-    top_proj = con.execute("SELECT project_name, detail_roi FROM v_project_metrics WHERE total_expenses > 0 ORDER BY detail_roi DESC LIMIT 3").fetchall()
-    top_proj_str = ', '.join(f'{p[0][:15]} {float(p[1]):.3f}×' for p in top_proj)
+    try:
+        top_proj = con.execute("SELECT project_name, detail_roi FROM v_project_metrics WHERE total_expenses > 0 ORDER BY detail_roi DESC LIMIT 3").fetchall()
+        top_proj_str = ', '.join(f'{p[0][:15]} {float(p[1]):.3f}×' for p in top_proj)
+    except Exception:
+        top_proj_str = '数据暂不可用'
     return f"""
 <div style="background:linear-gradient(135deg, #1a1400, #141000); border:1px solid #F59E0B; border-radius:10px; padding:18px 24px; margin:8px 0 16px 0;">
 <div style="font-size:1rem; font-weight:700; color:#F59E0B; margin-bottom:12px;">⚡ AI 决策摘要 · 项目360 · 基于2026年数据</div>
@@ -732,7 +743,14 @@ st.caption("⚠ 费用缺失2025年数据，全局ROI分母偏小、数值虚高
 section = st.radio("", ["门店360°", "促销员360°", "项目360°"], horizontal=True, label_visibility="collapsed")
 
 # Pre-compute 2026 stats for AI summaries
-yr_stats = _yr_stats()
+try:
+    yr_stats = _yr_stats()
+except Exception as e:
+    yr_stats = {'cost_total':0,'cost_stores':0,'sales_total':0,'sales_stores':0,'exec_count':0,'exec_stores':0,
+                'exec_promoters':0,'exec_att':0,'pts_total':0,'pts_stores':0,'task_total':0,'task_pass':0,
+                'task_pass_rate':0,'proj_exec':0,'proj_cost':0,'all_exec_stores':0,'zero_sales_pct':0,
+                'top_stores':'数据暂不可用','exp_total':0,'roi':0}
+    st.caption(f"AI摘要数据加载失败，使用默认值: {e}")
 
 if section == "门店360°":
 
