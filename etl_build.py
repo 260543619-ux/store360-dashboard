@@ -114,6 +114,38 @@ for code, label in tc_map:
 
 print("  ✅ 5 enum tables created")
 
+# --- Parse string-key enums (activity_type, project_type, task_type) ---
+def parse_string_enum(filepath):
+    """Parse files like CODE('CODE','LABEL'), with double quotes"""
+    mappings = []
+    with open(filepath, 'r') as f:
+        for line in f:
+            m = re.search(r'(\w+)\("(\w+)",\s*"([^"]*)"\)', line)
+            if m:
+                mappings.append((m.group(2), m.group(3)))
+    return mappings
+
+at_map = parse_string_enum(os.path.join(BASE, "activity_type枚举值.txt"))
+pt_map = parse_string_enum(os.path.join(BASE, "project_type枚举值.txt"))
+tt_map = parse_string_enum(os.path.join(BASE, "task_type枚举值.txt"))
+
+con.execute("CREATE TABLE enum_activity_type (code VARCHAR PRIMARY KEY, label VARCHAR)")
+for code, label in at_map:
+    con.execute("INSERT INTO enum_activity_type VALUES (?, ?)", [code, label])
+
+con.execute("CREATE TABLE enum_project_type (code VARCHAR PRIMARY KEY, label VARCHAR)")
+for code, label in pt_map:
+    con.execute("INSERT INTO enum_project_type VALUES (?, ?)", [code, label])
+
+con.execute("CREATE TABLE enum_task_type (code VARCHAR PRIMARY KEY, label VARCHAR)")
+for code, label in tt_map:
+    con.execute("INSERT INTO enum_task_type VALUES (?, ?)", [code, label])
+
+print(f"  activity_type: {len(at_map)} mappings")
+print(f"  project_type: {len(pt_map)} mappings")
+print(f"  task_type: {len(tt_map)} mappings")
+print("  ✅ 3 string-key enum tables created")
+
 # ============================================================
 print("\n" + "=" * 60)
 print("STEP 1: Load Excel files into DuckDB staging")
@@ -131,6 +163,8 @@ load_excel("shop_plan_brand", "门店计划品牌目标销量.xlsx", "bs_shop_pl
 load_excel("session", "场次表.xlsx", "bs_project_session_table_snapsh")
 load_excel("session_expense", "场次费用汇总.xlsx", "bs_project_session_expense_snap")
 load_excel("shop_info", "门店库.xlsx", "bs_shop_info")
+load_excel("promoter_profile", "促销员信息.xlsx")  # Promoter demographics
+load_excel("points", "积分变更记录.xlsx")          # Points change records
 
 print(f"\n  Total load time: {time.time()-t0:.1f}s")
 
@@ -193,15 +227,19 @@ con.execute("""
         question_enabled,
         sub_brand_sales_enabled, product_sales_enabled,
         gift_enabled, taste_enabled, taste_required,
-        project_type,
+        sp.project_type,
+        eat.label AS activity_type_label,
+        ept.label AS project_type_label,
         have_mvs_store, mvs_store_ratio,
         buy_num_enabled, buy_num_required,
         display_start_date, display_end_date,
         create_time, update_time
-    FROM stg_project
+    FROM stg_project sp
+    LEFT JOIN enum_activity_type eat ON sp.activity_type = eat.code
+    LEFT JOIN enum_project_type ept ON sp.project_type = ept.code
 """)
 projects = con.execute("SELECT COUNT(*) FROM dim_project").fetchone()[0]
-print(f"  ✅ dim_project: {projects:,} projects")
+print(f"  ✅ dim_project: {projects:,} projects (with type labels)")
 
 # --- Dim_Promoter ---
 con.execute("""
@@ -311,7 +349,8 @@ con.execute("""
         ds.store_unicode AS dim_store_unicode,
         ds.city_name, ds.province_name, ds.city_level_label,
         ds.shop_group_label, ds.trade_channel_label, ds.customer_cluster_label,
-        dp.brand_name AS project_brand, dp.activity_type, dp.project_type
+        dp.brand_name AS project_brand, dp.activity_type, dp.project_type,
+        dp.activity_type_label, dp.project_type_label
     FROM stg_arrange a
     LEFT JOIN dim_store ds ON a.shop_unicode = ds.store_unicode
     LEFT JOIN dim_project dp ON a.project_unicode = dp.project_unicode
@@ -335,16 +374,18 @@ con.execute("""
         sd.product_sn,
         sd.total_sales,
         sd.total_volumes,
-        sd.totalMoney,
+        sd.totalMoney / 100.0 AS totalMoney,
         ds.store_unicode AS dim_store_unicode,
         ds.city_name, ds.province_name, ds.city_level_label,
         ds.shop_group_label, ds.trade_channel_label,
         dp.product_name AS dim_product_name,
         dp.brand_name AS product_brand,
-        dp.sub_brand, dp.suggested_retail_price, dp.single_bag_weight
+        dp.sub_brand, dp.suggested_retail_price, dp.single_bag_weight,
+        dproj.start_time AS sales_date
     FROM stg_sales_detail sd
     LEFT JOIN dim_store ds ON sd.shop_unicode = ds.store_unicode
     LEFT JOIN dim_product dp ON sd.product_unicode = dp.product_unicode
+    LEFT JOIN dim_project dproj ON sd.project_unicode = dproj.project_unicode
 """)
 sales_rows = con.execute("SELECT COUNT(*) FROM fact_store_sales").fetchone()[0]
 print(f"  ✅ fact_store_sales: {sales_rows:,} rows (using 销量明细)")
@@ -391,6 +432,7 @@ con.execute("""
     SELECT
         t.id, t.unicode AS task_unicode,
         t.task_name, t.task_type,
+        ett.label AS task_type_label,
         t.shop_unicode, t.shop_name AS task_shop_name,
         t.promoter_unicode, t.promoter_name,
         t.exe_time, t.exe_count,
@@ -403,9 +445,10 @@ con.execute("""
         ds.city_name, ds.province_name
     FROM stg_task t
     LEFT JOIN dim_store ds ON t.shop_unicode = ds.store_unicode
+    LEFT JOIN enum_task_type ett ON t.task_type = ett.code
 """)
 task_rows = con.execute("SELECT COUNT(*) FROM fact_store_task").fetchone()[0]
-print(f"  ✅ fact_store_task: {task_rows:,} rows")
+print(f"  ✅ fact_store_task: {task_rows:,} rows (with type labels)")
 
 # --- Fact_StoreSession: with enum labels ---
 con.execute("""
@@ -457,13 +500,14 @@ con.execute("""
         ds.store_unicode AS dim_store_unicode,
         ds.city_name, ds.province_name, ds.city_level_label,
         ds.trade_channel_label, ds.shop_group_label,
-        dp.brand_name AS project_brand, dp.activity_type
+        dp.brand_name AS project_brand, dp.activity_type,
+        dp.activity_type_label, dp.project_type_label
     FROM stg_shop_plan sp
     LEFT JOIN dim_store ds ON sp.shop_unicode = ds.store_unicode
     LEFT JOIN dim_project dp ON sp.project_unicode = dp.project_unicode
 """)
 sp_rows = con.execute("SELECT COUNT(*) FROM fact_shop_plan").fetchone()[0]
-print(f"  ✅ fact_shop_plan: {sp_rows:,} rows")
+print(f"  ✅ fact_shop_plan: {sp_rows:,} rows (with type labels)")
 
 # --- Bridge_ShopPlanBrand ---
 con.execute("""
@@ -478,6 +522,26 @@ con.execute("""
 """)
 spb_rows = con.execute("SELECT COUNT(*) FROM bridge_shop_plan_brand").fetchone()[0]
 print(f"  ✅ bridge_shop_plan_brand: {spb_rows:,} rows")
+
+# --- Fact_Points: 积分变更记录，100分=¥10 ---
+con.execute("""
+    CREATE TABLE fact_points AS
+    SELECT
+        sp.promoter_sn, sp.promoter_unicode, sp.promoter_name,
+        sp.project_unicode, sp.project_name,
+        sp.shop_unicode, sp.shop_sn, sp.shop_name,
+        CAST(sp.create_time AS DATE) AS points_date,
+        sp.变更积分 AS points,
+        sp.变更积分 * 0.1 AS points_value,
+        sp.变更详情 AS points_detail,
+        ds.store_unicode AS dim_store_unicode,
+        ds.city_name, ds.province_name
+    FROM stg_points sp
+    LEFT JOIN dim_store ds ON sp.shop_unicode = ds.store_unicode
+""")
+pts_rows = con.execute("SELECT COUNT(*) FROM fact_points").fetchone()[0]
+pts_val = con.execute("SELECT SUM(points_value) FROM fact_points").fetchone()[0]
+print(f"  ✅ fact_points: {pts_rows:,} rows, total value ¥{pts_val:,.0f}")
 
 # ============================================================
 print("\n" + "=" * 60)
@@ -500,12 +564,26 @@ con.execute("""
             SUM(actual_sales_achieved_amount) AS total_achieved_amount,
             SUM(brand_sales_total) AS cost_brand_sales_total,
             SUM(single_store_sales) AS cost_single_store_sales,
-            COUNT(DISTINCT promoter_name) AS cost_promoter_count
+            COUNT(DISTINCT promoter_name) AS cost_promoter_count,
+            MIN(create_time) AS cost_start_date,
+            MAX(create_time) AS cost_end_date
         FROM fact_store_cost
         WHERE dim_store_unicode IS NOT NULL
         GROUP BY dim_store_unicode
     ),
-    -- Sales from new 销量明细
+    -- Points (100 points = ¥10)
+    store_points AS (
+        SELECT
+            dim_store_unicode,
+            SUM(points_value) AS total_points_value,
+            COUNT(*) AS points_records,
+            MIN(points_date) AS points_start_date,
+            MAX(points_date) AS points_end_date
+        FROM fact_points
+        WHERE dim_store_unicode IS NOT NULL
+        GROUP BY dim_store_unicode
+    ),
+    -- Sales from 销量明细 (all time + aligned to 2025+)
     store_sales AS (
         SELECT
             dim_store_unicode,
@@ -513,7 +591,10 @@ con.execute("""
             SUM(total_sales) AS detail_total_qty,
             SUM(total_volumes) AS detail_total_volumes,
             COUNT(DISTINCT product_unicode) AS product_variety,
-            COUNT(DISTINCT project_unicode) AS sales_project_count
+            COUNT(DISTINCT project_unicode) AS sales_project_count,
+            SUM(CASE WHEN sales_date >= '2025-01-01' THEN totalMoney ELSE 0 END) AS aligned_sales,
+            MIN(sales_date) AS sales_start_date,
+            MAX(sales_date) AS sales_end_date
         FROM fact_store_sales
         WHERE dim_store_unicode IS NOT NULL
         GROUP BY dim_store_unicode
@@ -573,7 +654,9 @@ con.execute("""
         COALESCE(sc.total_wages, 0) AS total_wages,
         COALESCE(sc.total_bonuses, 0) AS total_bonuses,
         COALESCE(sc.total_three_salary, 0) AS total_three_salary,
-        COALESCE(sc.total_expenses, 0) AS total_expenses,
+        COALESCE(sc.total_expenses, 0) AS total_cost_expenses,
+        COALESCE(spt.total_points_value, 0) AS total_points_value,
+        COALESCE(sc.total_expenses, 0) + COALESCE(spt.total_points_value, 0) AS total_expenses,
         COALESCE(sc.total_achieved_amount, 0) AS total_achieved_amount,
         COALESCE(sc.cost_brand_sales_total, 0) AS cost_brand_sales_total,
         COALESCE(sc.cost_promoter_count, 0) AS cost_promoter_count,
@@ -611,7 +694,7 @@ con.execute("""
         COALESCE(sp.dm_count, 0) AS dm_count,
         -- Computed ratios
         CASE WHEN COALESCE(sc.total_expenses, 0) > 0
-             THEN ROUND(COALESCE(sc.total_achieved_amount, 0) / sc.total_expenses, 2)
+             THEN ROUND(COALESCE(sc.total_achieved_amount, 0) / sc.total_expenses, 3)
              ELSE NULL END AS store_roi,
         CASE WHEN COALESCE(sc.total_session_days, 0) > 0
              THEN ROUND(COALESCE(sc.total_achieved_amount, 0) / sc.total_session_days, 0)
@@ -622,18 +705,26 @@ con.execute("""
         CASE WHEN COALESCE(st.total_tasks, 0) > 0
              THEN ROUND(COALESCE(st.passed_tasks, 0) * 100.0 / st.total_tasks, 1)
              ELSE NULL END AS task_pass_rate,
-        -- Sales-data ROI (from detail)
-        CASE WHEN COALESCE(sc.total_expenses, 0) > 0
-             THEN ROUND(COALESCE(ss.detail_total_money, 0) / sc.total_expenses, 2)
-             ELSE NULL END AS detail_roi
+        -- Sales-data ROI (from detail, all time)
+        CASE WHEN COALESCE(sc.total_expenses, 0) + COALESCE(spt.total_points_value, 0) > 0
+             THEN ROUND(COALESCE(ss.detail_total_money, 0) / (COALESCE(sc.total_expenses, 0) + COALESCE(spt.total_points_value, 0)), 3)
+             ELSE NULL END AS detail_roi,
+        -- Time-aligned sales & ROI (2025+, matching execution/cost period)
+        COALESCE(ss.aligned_sales, 0) AS aligned_sales,
+        sc.cost_start_date, sc.cost_end_date,
+        ss.sales_start_date, ss.sales_end_date,
+        CASE WHEN COALESCE(sc.total_expenses, 0) + COALESCE(spt.total_points_value, 0) > 0
+             THEN ROUND(COALESCE(ss.aligned_sales, 0) / (COALESCE(sc.total_expenses, 0) + COALESCE(spt.total_points_value, 0)), 3)
+             ELSE NULL END AS aligned_roi
     FROM dim_store ds
     LEFT JOIN store_cost sc ON ds.store_unicode = sc.dim_store_unicode
+    LEFT JOIN store_points spt ON ds.store_unicode = spt.dim_store_unicode
     LEFT JOIN store_sales ss ON ds.store_unicode = ss.dim_store_unicode
     LEFT JOIN store_exec se ON ds.store_unicode = se.dim_store_unicode
     LEFT JOIN store_task st ON ds.store_unicode = st.dim_store_unicode
     LEFT JOIN store_plan sp ON ds.store_unicode = sp.dim_store_unicode
 """)
-print("  ✅ v_store_metrics view created (with enum labels + detail sales)")
+print("  ✅ v_store_metrics view created (with points + time-aligned metrics)")
 
 # --- Store-brand level metrics ---
 con.execute("""
@@ -690,10 +781,11 @@ con.execute("""
             SUM(COALESCE(brand_sales, 0)) AS actual_sales,
             SUM(COALESCE(taste_info, 0)) AS taste_total,
             SUM(COALESCE(buy_num, 0)) AS buy_total,
-            AVG(CASE WHEN start_status = 1 AND end_status = 1 THEN 1.0 ELSE 0.0 END) AS attendance_rate
+            AVG(CASE WHEN start_status = 1 AND end_status = 1 THEN 1.0 ELSE 0.0 END) AS attendance_rate,
+            MAX(activity_type_label) AS activity_type_label
         FROM fact_store_execution
         WHERE dim_store_unicode IS NOT NULL AND project_brand IS NOT NULL
-        GROUP BY dim_store_unicode, project_brand, activity_type
+        GROUP BY dim_store_unicode, project_brand, activity_type, activity_type_label
     )
     SELECT
         ds.store_unicode, ds.shop_name, ds.city_name, ds.province_name,
@@ -702,6 +794,7 @@ con.execute("""
         ds.trade_channel_label AS trade_channel,
         COALESCE(eb.brand_name, pb.brand_name, sb.brand_name) AS brand_name,
         COALESCE(pb.activity_type, eb.activity_type) AS activity_type,
+        COALESCE(eb.activity_type_label, eb.activity_type) AS activity_type_label,
         COALESCE(pb.target_sales, 0) AS target_sales,
         COALESCE(eb.actual_sales, 0) AS actual_sales,
         COALESCE(sb.detail_sales, 0) AS detail_sales,
@@ -715,11 +808,11 @@ con.execute("""
         COALESCE(pb.plan_count, 0) AS plan_count,
         -- ROI from cost table
         CASE WHEN COALESCE(cb.total_expenses, 0) > 0
-             THEN ROUND(COALESCE(cb.total_sales, 0) / cb.total_expenses, 2)
+             THEN ROUND(COALESCE(cb.total_sales, 0) / cb.total_expenses, 3)
              ELSE NULL END AS roi,
         -- ROI from detail sales
         CASE WHEN COALESCE(cb.total_expenses, 0) > 0
-             THEN ROUND(COALESCE(sb.detail_sales, 0) / cb.total_expenses, 2)
+             THEN ROUND(COALESCE(sb.detail_sales, 0) / cb.total_expenses, 3)
              ELSE NULL END AS detail_roi,
         -- Achievement rate
         CASE WHEN COALESCE(pb.target_sales, 0) > 0
@@ -740,6 +833,516 @@ con.execute("""
     WHERE COALESCE(eb.brand_name, pb.brand_name, sb.brand_name) IS NOT NULL
 """)
 print("  ✅ v_store_brand_metrics view created (with detail sales)")
+
+# ============================================================
+# NEW: Promoter & Project analysis views
+# ============================================================
+print("\n" + "=" * 60)
+print("STEP 4b: Promoter & Project analysis views")
+print("=" * 60)
+
+# --- dim_promoter_clean: deduplicated promoter bridge table with profile ---
+# fact_store_cost uses promoter_sn; other fact tables use promoter_unicode
+# dim_promoter has 38K rows with duplicates from UNION. Dedup to 21K unique promoter_sn.
+# Join with stg_promoter_profile for demographics (age, gender, membership, org)
+con.execute("""
+    CREATE TABLE dim_promoter_clean AS
+    SELECT
+        dp.promoter_sn,
+        dp.promoter_unicode,
+        dp.promoter_name,
+        dp.promoter_mobile,
+        dp.supervisor_unicode,
+        dp.supervisor_name,
+        dp.supervisor_mobile,
+        dp.supervisor_sn,
+        pp.gender,
+        pp.age,
+        pp.membership_name,
+        pp.membership_level_id,
+        pp.city AS profile_city,
+        pp.city_unicode AS profile_city_unicode,
+        pp.au AS profile_au,
+        pp.au_unicode AS profile_au_unicode,
+        pp.ru AS profile_ru,
+        pp.ru_unicode AS profile_ru_unicode,
+        pp.mu AS profile_mu,
+        pp.mu_unicode AS profile_mu_unicode
+    FROM (
+        SELECT
+            promoter_sn,
+            MAX(promoter_unicode) AS promoter_unicode,
+            MAX(promoter_name) AS promoter_name,
+            MAX(promoter_mobile) AS promoter_mobile,
+            MAX(supervisor_unicode) AS supervisor_unicode,
+            MAX(supervisor_name) AS supervisor_name,
+            MAX(supervisor_mobile) AS supervisor_mobile,
+            MAX(supervisor_sn) AS supervisor_sn
+        FROM dim_promoter
+        WHERE promoter_sn IS NOT NULL
+        GROUP BY promoter_sn
+    ) dp
+    LEFT JOIN stg_promoter_profile pp ON dp.promoter_sn = pp.promoter_sn
+""")
+pc_rows = con.execute("SELECT COUNT(*) FROM dim_promoter_clean").fetchone()[0]
+print(f"  ✅ dim_promoter_clean: {pc_rows:,} promoters (deduped from {promoters:,})")
+
+# --- v_promoter_metrics: Promoter 360° metrics ---
+# Full outer join on cost, sales, execution, and task data
+con.execute("""
+    CREATE VIEW v_promoter_metrics AS
+    WITH
+    -- Cost data: join via dim_promoter_clean on promoter_sn
+    promoter_cost AS (
+        SELECT
+            dpm.promoter_unicode,
+            SUM(fsc.efficacious_session_days) AS total_session_days,
+            SUM(fsc.wages) AS total_wages,
+            SUM(fsc.incentive_bonuses) AS total_bonuses,
+            SUM(fsc.three_salary) AS total_three_salary,
+            SUM(fsc.total_short_term_expenses) AS total_expenses,
+            SUM(fsc.actual_sales_achieved_amount) AS total_achieved_amount,
+            SUM(fsc.brand_sales_total) AS cost_brand_sales,
+            COUNT(DISTINCT fsc.project_reconciliation_unicode) AS cost_project_count,
+            COUNT(DISTINCT fsc.dim_store_unicode) AS cost_store_count,
+            MIN(fsc.create_time) AS cost_start_date,
+            MAX(fsc.create_time) AS cost_end_date
+        FROM fact_store_cost fsc
+        INNER JOIN dim_promoter_clean dpm ON fsc.promoter_sn = dpm.promoter_sn
+        WHERE fsc.dim_store_unicode IS NOT NULL
+        GROUP BY dpm.promoter_unicode
+    ),
+    -- Points (join with dim_promoter_clean for promoter_unicode)
+    promoter_points AS (
+        SELECT
+            dpm.promoter_unicode,
+            SUM(fp.points_value) AS total_points_value,
+            COUNT(*) AS points_records
+        FROM fact_points fp
+        INNER JOIN dim_promoter_clean dpm ON fp.promoter_sn = dpm.promoter_sn
+        GROUP BY dpm.promoter_unicode
+    ),
+    -- Sales data: direct join on promoter_unicode
+    promoter_sales AS (
+        SELECT
+            promoter_unicode,
+            SUM(totalMoney) AS detail_total_money,
+            SUM(total_sales) AS detail_total_qty,
+            SUM(total_volumes) AS detail_total_volumes,
+            COUNT(DISTINCT product_unicode) AS product_variety,
+            COUNT(DISTINCT project_unicode) AS sales_project_count,
+            COUNT(DISTINCT dim_store_unicode) AS sales_store_count,
+            SUM(CASE WHEN sales_date >= '2025-01-01' THEN totalMoney ELSE 0 END) AS aligned_sales,
+            MIN(sales_date) AS sales_start_date,
+            MAX(sales_date) AS sales_end_date
+        FROM fact_store_sales
+        WHERE promoter_unicode IS NOT NULL
+        GROUP BY promoter_unicode
+    ),
+    -- Execution data: direct join on promoter_unicode
+    promoter_exec AS (
+        SELECT
+            promoter_unicode,
+            COUNT(*) AS total_arranges,
+            COUNT(DISTINCT project_unicode) AS arr_project_count,
+            COUNT(DISTINCT dim_store_unicode) AS arr_store_count,
+            COUNT(DISTINCT arrange_date) AS arr_days,
+            SUM(CASE WHEN start_status = 1 THEN 1 ELSE 0 END) AS normal_checkins,
+            SUM(CASE WHEN start_is_late = 1 THEN 1 ELSE 0 END) AS late_count,
+            SUM(CASE WHEN end_is_leave_early = 1 THEN 1 ELSE 0 END) AS early_leave_count,
+            SUM(COALESCE(brand_sales, 0)) AS exec_brand_sales,
+            SUM(COALESCE(taste_info, 0)) AS total_taste,
+            SUM(COALESCE(buy_num, 0)) AS total_buy_num,
+            SUM(COALESCE(gift_quantity, 0)) AS total_gift
+        FROM fact_store_execution
+        WHERE promoter_unicode IS NOT NULL
+        GROUP BY promoter_unicode
+    ),
+    -- Task data: direct join on promoter_unicode
+    promoter_task AS (
+        SELECT
+            promoter_unicode,
+            COUNT(*) AS total_tasks,
+            SUM(CASE WHEN status = 'PASS' THEN 1 ELSE 0 END) AS passed_tasks,
+            SUM(CASE WHEN status = 'REFUSE' THEN 1 ELSE 0 END) AS refused_tasks,
+            COUNT(DISTINCT task_type) AS task_type_count
+        FROM fact_store_task
+        WHERE promoter_unicode IS NOT NULL
+        GROUP BY promoter_unicode
+    )
+    SELECT
+        dpc.promoter_sn,
+        dpc.promoter_unicode,
+        dpc.promoter_name,
+        dpc.promoter_mobile,
+        dpc.supervisor_name,
+        dpc.supervisor_unicode,
+        -- Profile demographics
+        dpc.gender,
+        dpc.age,
+        dpc.membership_name,
+        dpc.membership_level_id,
+        dpc.profile_city,
+        dpc.profile_au,
+        dpc.profile_ru,
+        dpc.profile_mu,
+        -- Cost metrics
+        COALESCE(pc.total_session_days, 0) AS total_session_days,
+        COALESCE(pc.total_wages, 0) AS total_wages,
+        COALESCE(pc.total_bonuses, 0) AS total_bonuses,
+        COALESCE(pc.total_three_salary, 0) AS total_three_salary,
+        COALESCE(pc.total_expenses, 0) AS total_cost_expenses,
+        COALESCE(pp.total_points_value, 0) AS total_points_value,
+        COALESCE(pc.total_expenses, 0) + COALESCE(pp.total_points_value, 0) AS total_expenses,
+        COALESCE(pc.total_achieved_amount, 0) AS total_achieved_amount,
+        COALESCE(pc.cost_brand_sales, 0) AS cost_brand_sales,
+        COALESCE(pc.cost_project_count, 0) AS cost_project_count,
+        COALESCE(pc.cost_store_count, 0) AS cost_store_count,
+        -- Sales metrics
+        COALESCE(ps.detail_total_money, 0) AS detail_total_money,
+        COALESCE(ps.detail_total_qty, 0) AS detail_total_qty,
+        COALESCE(ps.detail_total_volumes, 0) AS detail_total_volumes,
+        COALESCE(ps.product_variety, 0) AS product_variety,
+        COALESCE(ps.sales_project_count, 0) AS sales_project_count,
+        COALESCE(ps.sales_store_count, 0) AS sales_store_count,
+        -- Execution metrics
+        COALESCE(pe.total_arranges, 0) AS total_arranges,
+        COALESCE(pe.arr_project_count, 0) AS arr_project_count,
+        COALESCE(pe.arr_store_count, 0) AS arr_store_count,
+        COALESCE(pe.arr_days, 0) AS arr_days,
+        COALESCE(pe.normal_checkins, 0) AS normal_checkins,
+        COALESCE(pe.late_count, 0) AS late_count,
+        COALESCE(pe.early_leave_count, 0) AS early_leave_count,
+        COALESCE(pe.exec_brand_sales, 0) AS exec_brand_sales,
+        COALESCE(pe.total_taste, 0) AS total_taste,
+        COALESCE(pe.total_buy_num, 0) AS total_buy_num,
+        COALESCE(pe.total_gift, 0) AS total_gift,
+        -- Task metrics
+        COALESCE(pt.total_tasks, 0) AS total_tasks,
+        COALESCE(pt.passed_tasks, 0) AS passed_tasks,
+        COALESCE(pt.refused_tasks, 0) AS refused_tasks,
+        COALESCE(pt.task_type_count, 0) AS task_type_count,
+        -- Computed KPIs
+        CASE WHEN COALESCE(pe.total_arranges, 0) > 0
+             THEN ROUND(COALESCE(pe.normal_checkins, 0) * 100.0 / pe.total_arranges, 1)
+             ELSE NULL END AS attendance_rate,
+        CASE WHEN COALESCE(pt.total_tasks, 0) > 0
+             THEN ROUND(COALESCE(pt.passed_tasks, 0) * 100.0 / pt.total_tasks, 1)
+             ELSE NULL END AS task_pass_rate,
+        CASE WHEN COALESCE(pe.total_taste, 0) > 0
+             THEN ROUND(COALESCE(pe.total_buy_num, 0) * 100.0 / pe.total_taste, 1)
+             ELSE NULL END AS taste_conversion,
+        CASE WHEN COALESCE(pc.total_wages, 0) > 0
+             THEN ROUND(COALESCE(ps.detail_total_money, 0) / pc.total_wages, 3)
+             ELSE NULL END AS labor_efficiency,
+        CASE WHEN COALESCE(pc.total_expenses, 0) + COALESCE(pp.total_points_value, 0) > 0
+             THEN ROUND(COALESCE(ps.detail_total_money, 0) / (COALESCE(pc.total_expenses, 0) + COALESCE(pp.total_points_value, 0)), 3)
+             ELSE NULL END AS sales_roi,
+        -- Time-aligned metrics
+        COALESCE(ps.aligned_sales, 0) AS aligned_sales,
+        pc.cost_start_date, pc.cost_end_date,
+        ps.sales_start_date, ps.sales_end_date,
+        CASE WHEN COALESCE(pc.total_expenses, 0) + COALESCE(pp.total_points_value, 0) > 0
+             THEN ROUND(COALESCE(ps.aligned_sales, 0) / (COALESCE(pc.total_expenses, 0) + COALESCE(pp.total_points_value, 0)), 3)
+             ELSE NULL END AS aligned_roi
+    FROM dim_promoter_clean dpc
+    LEFT JOIN promoter_cost pc ON dpc.promoter_unicode = pc.promoter_unicode
+        OR (pc.promoter_unicode IS NULL AND dpc.promoter_unicode IS NULL)
+    LEFT JOIN promoter_points pp ON dpc.promoter_unicode = pp.promoter_unicode
+    LEFT JOIN promoter_sales ps ON dpc.promoter_unicode = ps.promoter_unicode
+    LEFT JOIN promoter_exec pe ON dpc.promoter_unicode = pe.promoter_unicode
+    LEFT JOIN promoter_task pt ON dpc.promoter_unicode = pt.promoter_unicode
+    WHERE pc.total_session_days > 0
+       OR pp.total_points_value > 0
+       OR ps.detail_total_money > 0
+       OR pe.total_arranges > 0
+       OR pt.total_tasks > 0
+""")
+pm_rows = con.execute("SELECT COUNT(*) FROM v_promoter_metrics").fetchone()[0]
+print(f"  ✅ v_promoter_metrics: {pm_rows:,} promoters with activity (incl. points)")
+
+# --- v_project_metrics: Project 360° metrics ---
+con.execute("""
+    CREATE VIEW v_project_metrics AS
+    WITH
+    -- Cost: join via project_name (fact_store_cost has no project_unicode)
+    project_cost AS (
+        SELECT
+            project_name,
+            SUM(efficacious_session_days) AS total_session_days,
+            SUM(wages) AS total_wages,
+            SUM(incentive_bonuses) AS total_bonuses,
+            SUM(three_salary) AS total_three_salary,
+            SUM(total_short_term_expenses) AS total_expenses,
+            SUM(actual_sales_achieved_amount) AS total_achieved_amount,
+            SUM(brand_sales_total) AS cost_brand_sales,
+            COUNT(DISTINCT dim_store_unicode) AS cost_store_count,
+            COUNT(DISTINCT promoter_name) AS cost_promoter_count,
+            MIN(create_time) AS cost_start_date,
+            MAX(create_time) AS cost_end_date
+        FROM fact_store_cost
+        WHERE project_name IS NOT NULL AND dim_store_unicode IS NOT NULL
+        GROUP BY project_name
+    ),
+    -- Points (joinable by project_unicode)
+    project_points AS (
+        SELECT
+            project_unicode,
+            SUM(points_value) AS total_points_value,
+            COUNT(*) AS points_records
+        FROM fact_points
+        WHERE project_unicode IS NOT NULL
+        GROUP BY project_unicode
+    ),
+    -- Sales: join via project_unicode (fact_store_sales has project_unicode)
+    project_sales AS (
+        SELECT
+            project_unicode,
+            project_name,
+            SUM(totalMoney) AS detail_total_money,
+            SUM(total_sales) AS detail_total_qty,
+            SUM(total_volumes) AS detail_total_volumes,
+            COUNT(DISTINCT product_unicode) AS product_variety,
+            COUNT(DISTINCT dim_store_unicode) AS sales_store_count,
+            COUNT(DISTINCT promoter_unicode) AS sales_promoter_count,
+            SUM(CASE WHEN sales_date >= '2025-01-01' THEN totalMoney ELSE 0 END) AS aligned_sales,
+            MIN(sales_date) AS sales_start_date,
+            MAX(sales_date) AS sales_end_date
+        FROM fact_store_sales
+        WHERE project_unicode IS NOT NULL
+        GROUP BY project_unicode, project_name
+    ),
+    -- Execution: join via project_unicode
+    project_exec AS (
+        SELECT
+            project_unicode,
+            COUNT(*) AS total_arranges,
+            COUNT(DISTINCT dim_store_unicode) AS arr_store_count,
+            COUNT(DISTINCT promoter_unicode) AS arr_promoter_count,
+            SUM(COALESCE(brand_sales, 0)) AS exec_brand_sales,
+            SUM(COALESCE(taste_info, 0)) AS total_taste,
+            SUM(COALESCE(buy_num, 0)) AS total_buy_num,
+            SUM(CASE WHEN start_status = 1 THEN 1 ELSE 0 END) AS normal_checkins,
+            SUM(CASE WHEN start_is_late = 1 THEN 1 ELSE 0 END) AS late_count
+        FROM fact_store_execution
+        WHERE project_unicode IS NOT NULL
+        GROUP BY project_unicode
+    ),
+    -- Session: join via project_name (fact_store_session has no project_unicode)
+    project_session AS (
+        SELECT
+            project_name,
+            COUNT(*) AS session_count,
+            COUNT(DISTINCT dim_store_unicode) AS session_store_count,
+            SUM(brand_sales_total) AS session_brand_sales,
+            SUM(single_store_sales) AS session_single_store_sales
+        FROM fact_store_session
+        WHERE project_name IS NOT NULL AND dim_store_unicode IS NOT NULL
+        GROUP BY project_name
+    ),
+    -- Shop plan: join via project_unicode
+    project_plan AS (
+        SELECT
+            project_unicode,
+            COUNT(*) AS total_plans,
+            COUNT(DISTINCT dim_store_unicode) AS plan_store_count,
+            AVG(CASE WHEN display_area > 0 THEN display_area END) AS avg_display_area,
+            SUM(CASE WHEN have_posm = 1 THEN 1 ELSE 0 END) AS posm_count,
+            SUM(CASE WHEN have_dm = 1 THEN 1 ELSE 0 END) AS dm_count,
+            SUM(COALESCE(brand_sales_total, 0)) AS plan_brand_sales
+        FROM fact_shop_plan
+        WHERE project_unicode IS NOT NULL AND dim_store_unicode IS NOT NULL
+        GROUP BY project_unicode
+    )
+    SELECT
+        dp.project_unicode,
+        dp.project_name,
+        dp.status,
+        dp.ascription,
+        dp.start_time,
+        dp.end_time,
+        dp.schedule_type,
+        dp.activity_type,
+        COALESCE(dp.activity_type_label, dp.activity_type) AS activity_type_label,
+        dp.brand_name,
+        dp.brand_unicode,
+        dp.project_type,
+        COALESCE(dp.project_type_label, dp.project_type) AS project_type_label,
+        -- Cost
+        COALESCE(pc.total_session_days, 0) AS total_session_days,
+        COALESCE(pc.total_wages, 0) AS total_wages,
+        COALESCE(pc.total_bonuses, 0) AS total_bonuses,
+        COALESCE(pc.total_three_salary, 0) AS total_three_salary,
+        COALESCE(pc.total_expenses, 0) AS total_cost_expenses,
+        COALESCE(ppts.total_points_value, 0) AS total_points_value,
+        COALESCE(pc.total_expenses, 0) + COALESCE(ppts.total_points_value, 0) AS total_expenses,
+        COALESCE(pc.total_achieved_amount, 0) AS total_achieved_amount,
+        COALESCE(pc.cost_brand_sales, 0) AS cost_brand_sales,
+        COALESCE(pc.cost_store_count, 0) AS cost_store_count,
+        COALESCE(pc.cost_promoter_count, 0) AS cost_promoter_count,
+        -- Sales
+        COALESCE(ps.detail_total_money, 0) AS detail_total_money,
+        COALESCE(ps.detail_total_qty, 0) AS detail_total_qty,
+        COALESCE(ps.detail_total_volumes, 0) AS detail_total_volumes,
+        COALESCE(ps.product_variety, 0) AS product_variety,
+        COALESCE(ps.sales_store_count, 0) AS sales_store_count,
+        COALESCE(ps.sales_promoter_count, 0) AS sales_promoter_count,
+        -- Execution
+        COALESCE(pe.total_arranges, 0) AS total_arranges,
+        COALESCE(pe.arr_store_count, 0) AS arr_store_count,
+        COALESCE(pe.arr_promoter_count, 0) AS arr_promoter_count,
+        COALESCE(pe.exec_brand_sales, 0) AS exec_brand_sales,
+        COALESCE(pe.total_taste, 0) AS total_taste,
+        COALESCE(pe.total_buy_num, 0) AS total_buy_num,
+        COALESCE(pe.normal_checkins, 0) AS normal_checkins,
+        COALESCE(pe.late_count, 0) AS late_count,
+        -- Session
+        COALESCE(pses.session_count, 0) AS session_count,
+        COALESCE(pses.session_store_count, 0) AS session_store_count,
+        COALESCE(pses.session_brand_sales, 0) AS session_brand_sales,
+        -- Plan
+        COALESCE(pp.total_plans, 0) AS total_plans,
+        COALESCE(pp.plan_store_count, 0) AS plan_store_count,
+        pp.avg_display_area,
+        COALESCE(pp.posm_count, 0) AS posm_count,
+        COALESCE(pp.dm_count, 0) AS dm_count,
+        COALESCE(pp.plan_brand_sales, 0) AS plan_brand_sales,
+        -- Computed KPIs (denominator includes points)
+        CASE WHEN COALESCE(pc.total_expenses, 0) + COALESCE(ppts.total_points_value, 0) > 0
+             THEN ROUND(COALESCE(pc.total_achieved_amount, 0) / (COALESCE(pc.total_expenses, 0) + COALESCE(ppts.total_points_value, 0)), 3)
+             ELSE NULL END AS cost_roi,
+        CASE WHEN COALESCE(pc.total_expenses, 0) + COALESCE(ppts.total_points_value, 0) > 0
+             THEN ROUND(COALESCE(ps.detail_total_money, 0) / (COALESCE(pc.total_expenses, 0) + COALESCE(ppts.total_points_value, 0)), 3)
+             ELSE NULL END AS detail_roi,
+        -- Time-aligned sales & ROI
+        COALESCE(ps.aligned_sales, 0) AS aligned_sales,
+        pc.cost_start_date, pc.cost_end_date,
+        ps.sales_start_date, ps.sales_end_date,
+        CASE WHEN COALESCE(pc.total_expenses, 0) + COALESCE(ppts.total_points_value, 0) > 0
+             THEN ROUND(COALESCE(ps.aligned_sales, 0) / (COALESCE(pc.total_expenses, 0) + COALESCE(ppts.total_points_value, 0)), 3)
+             ELSE NULL END AS aligned_roi,
+        CASE WHEN COALESCE(pp.plan_brand_sales, 0) > 0
+             THEN ROUND(COALESCE(pe.exec_brand_sales, 0) * 100.0 / pp.plan_brand_sales, 1)
+             ELSE NULL END AS achievement_rate,
+        CASE WHEN COALESCE(pe.total_taste, 0) > 0
+             THEN ROUND(COALESCE(pe.total_buy_num, 0) * 100.0 / pe.total_taste, 1)
+             ELSE NULL END AS taste_conversion,
+        CASE WHEN COALESCE(pc.total_wages, 0) > 0
+             THEN ROUND(COALESCE(ps.detail_total_money, 0) / pc.total_wages, 3)
+             ELSE NULL END AS labor_efficiency
+    FROM dim_project dp
+    LEFT JOIN project_cost pc ON dp.project_name = pc.project_name
+    LEFT JOIN project_points ppts ON dp.project_unicode = ppts.project_unicode
+    LEFT JOIN project_sales ps ON dp.project_unicode = ps.project_unicode
+    LEFT JOIN project_exec pe ON dp.project_unicode = pe.project_unicode
+    LEFT JOIN project_session pses ON dp.project_name = pses.project_name
+    LEFT JOIN project_plan pp ON dp.project_unicode = pp.project_unicode
+    WHERE pc.total_expenses > 0
+       OR ppts.total_points_value > 0
+       OR ps.detail_total_money > 0
+       OR pe.total_arranges > 0
+       OR pses.session_count > 0
+       OR pp.total_plans > 0
+""")
+pj_rows = con.execute("SELECT COUNT(*) FROM v_project_metrics").fetchone()[0]
+print(f"  ✅ v_project_metrics: {pj_rows:,} projects")
+
+# --- v_project_activity_type_metrics: Aggregated by activity type ---
+con.execute("""
+    CREATE VIEW v_project_activity_type_metrics AS
+    SELECT
+        activity_type,
+        COUNT(*) AS project_count,
+        COUNT(CASE WHEN status = 'PROGRESS' THEN 1 END) AS active_projects,
+        SUM(total_session_days) AS total_session_days,
+        SUM(total_expenses) AS total_expenses,
+        SUM(total_achieved_amount) AS total_achieved_amount,
+        SUM(detail_total_money) AS total_detail_money,
+        SUM(cost_brand_sales) AS total_brand_sales,
+        SUM(total_arranges) AS total_arranges,
+        SUM(total_taste) AS total_taste,
+        SUM(total_buy_num) AS total_buy_num,
+        SUM(cost_store_count) AS total_stores_covered,
+        SUM(cost_promoter_count) AS total_promoters_deployed,
+        AVG(cost_roi) AS avg_cost_roi,
+        AVG(detail_roi) AS avg_detail_roi,
+        AVG(achievement_rate) AS avg_achievement_rate,
+        AVG(taste_conversion) AS avg_taste_conversion,
+        AVG(labor_efficiency) AS avg_labor_efficiency
+    FROM v_project_metrics
+    WHERE activity_type IS NOT NULL
+    GROUP BY activity_type
+""")
+atm_rows = con.execute("SELECT COUNT(*) FROM v_project_activity_type_metrics").fetchone()[0]
+print(f"  ✅ v_project_activity_type_metrics: {atm_rows:,} activity types")
+
+# --- v_monthly_trend: Monthly time series across all fact tables ---
+con.execute("""
+    CREATE VIEW v_monthly_trend AS
+    WITH months AS (
+        SELECT DISTINCT year_month FROM dim_date
+        WHERE date_value >= '2022-01-01' AND date_value <= CURRENT_DATE
+    ),
+    monthly_sales AS (
+        SELECT strftime(fss.sales_date, '%Y-%m') AS ym,
+            SUM(fss.totalMoney) AS sales_amount,
+            COUNT(DISTINCT fss.dim_store_unicode) AS sales_stores,
+            COUNT(DISTINCT fss.promoter_unicode) AS sales_promoters
+        FROM fact_store_sales fss
+        WHERE fss.sales_date IS NOT NULL
+        GROUP BY ym
+    ),
+    monthly_cost AS (
+        SELECT strftime(fsc.create_time, '%Y-%m') AS ym,
+            SUM(fsc.total_short_term_expenses) AS cost_amount,
+            SUM(fsc.wages + fsc.incentive_bonuses + fsc.three_salary) AS labor_cost,
+            COUNT(DISTINCT fsc.dim_store_unicode) AS cost_stores,
+            COUNT(DISTINCT fsc.promoter_sn) AS cost_promoters
+        FROM fact_store_cost fsc
+        WHERE fsc.create_time IS NOT NULL
+        GROUP BY ym
+    ),
+    monthly_points AS (
+        SELECT strftime(points_date, '%Y-%m') AS ym,
+            SUM(points_value) AS points_value,
+            COUNT(*) AS points_records
+        FROM fact_points
+        GROUP BY ym
+    ),
+    monthly_exec AS (
+        SELECT strftime(fse.arrange_date, '%Y-%m') AS ym,
+            COUNT(*) AS arranges,
+            COUNT(DISTINCT fse.dim_store_unicode) AS exec_stores,
+            COUNT(DISTINCT fse.promoter_unicode) AS exec_promoters,
+            SUM(COALESCE(fse.taste_info, 0)) AS taste_total,
+            SUM(COALESCE(fse.buy_num, 0)) AS buy_total
+        FROM fact_store_execution fse
+        GROUP BY ym
+    )
+    SELECT
+        m.year_month,
+        COALESCE(ms.sales_amount, 0) AS sales_amount,
+        COALESCE(ms.sales_stores, 0) AS sales_stores,
+        COALESCE(mc.cost_amount, 0) AS cost_amount,
+        COALESCE(mp.points_value, 0) AS points_value,
+        COALESCE(mc.labor_cost, 0) AS labor_cost,
+        COALESCE(mc.cost_stores, 0) AS cost_stores,
+        COALESCE(me.arranges, 0) AS arranges,
+        COALESCE(me.exec_stores, 0) AS exec_stores,
+        COALESCE(me.taste_total, 0) AS taste_total,
+        CASE WHEN COALESCE(mc.cost_amount, 0) + COALESCE(mp.points_value, 0) > 0
+             THEN ROUND(COALESCE(ms.sales_amount, 0) / (COALESCE(mc.cost_amount, 0) + COALESCE(mp.points_value, 0)), 3)
+             ELSE NULL END AS monthly_roi
+    FROM months m
+    LEFT JOIN monthly_sales ms ON m.year_month = ms.ym
+    LEFT JOIN monthly_cost mc ON m.year_month = mc.ym
+    LEFT JOIN monthly_points mp ON m.year_month = mp.ym
+    LEFT JOIN monthly_exec me ON m.year_month = me.ym
+    WHERE COALESCE(ms.sales_amount, mc.cost_amount, mp.points_value, me.arranges, 0) > 0
+    ORDER BY m.year_month
+""")
+mt_rows = con.execute("SELECT COUNT(*) FROM v_monthly_trend").fetchone()[0]
+print(f"  ✅ v_monthly_trend: {mt_rows} months of data")
 
 # ============================================================
 print("\n" + "=" * 60)
@@ -767,11 +1370,23 @@ stats = con.execute("""
     SELECT 'Total detail sales (销量明细)', ROUND(SUM(detail_total_money))::VARCHAR
         FROM v_store_metrics WHERE detail_total_money > 0
     UNION ALL
-    SELECT 'Overall ROI (cost)', ROUND(SUM(total_achieved_amount) / NULLIF(SUM(total_expenses), 0), 2)::VARCHAR
+    SELECT 'Overall ROI (cost)', ROUND(SUM(total_achieved_amount) / NULLIF(SUM(total_expenses), 0), 3)::VARCHAR
         FROM v_store_metrics
     UNION ALL
-    SELECT 'Overall ROI (detail)', ROUND(SUM(detail_total_money) / NULLIF(SUM(total_expenses), 0), 2)::VARCHAR
+    SELECT 'Overall ROI (detail)', ROUND(SUM(detail_total_money) / NULLIF(SUM(total_expenses), 0), 3)::VARCHAR
         FROM v_store_metrics
+    UNION ALL
+    SELECT 'Unique promoters (clean)', COUNT(*)::VARCHAR FROM dim_promoter_clean
+    UNION ALL
+    SELECT 'Promoters with activity', COUNT(*)::VARCHAR FROM v_promoter_metrics
+    UNION ALL
+    SELECT 'Avg promoter attendance %', ROUND(AVG(attendance_rate), 1)::VARCHAR
+        FROM v_promoter_metrics WHERE attendance_rate IS NOT NULL
+    UNION ALL
+    SELECT 'Projects with data', COUNT(*)::VARCHAR FROM v_project_metrics
+    UNION ALL
+    SELECT 'Avg project detail ROI', ROUND(AVG(detail_roi), 3)::VARCHAR
+        FROM v_project_metrics WHERE detail_roi IS NOT NULL
 """).fetchall()
 
 for metric, value in stats:

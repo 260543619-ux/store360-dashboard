@@ -1,0 +1,4 @@
+TASTE("TASTE","试吃"),
+    ASSIST_SALE("ASSIST_SALE","助销"),
+    FREE_SAMPLE("FREE_SAMPLE","派样"),
+    ROAD_SHOW("ROAD_SHOW","路演")
