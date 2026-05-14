@@ -560,35 +560,48 @@ def get_project_brand_activity_matrix():
     return con.execute(q).df()
 
 def _yr_stats():
-    """Helper: query 2026 global stats, return dict of pre-converted values."""
+    """Helper: query 2026 global stats with fallback for missing columns."""
     yr = 2026
     f = lambda v: float(v) if v is not None else 0.0
     i = lambda v: int(v) if v is not None else 0
-    cost = con.execute(f"SELECT SUM(total_short_term_expenses), COUNT(DISTINCT dim_store_unicode) FROM fact_store_cost WHERE EXTRACT(YEAR FROM create_time)={yr}").fetchone()
-    sales = con.execute(f"SELECT SUM(totalMoney), COUNT(DISTINCT dim_store_unicode) FROM fact_store_sales WHERE EXTRACT(YEAR FROM sales_date)={yr}").fetchone()
-    exec_r = con.execute(f"SELECT COUNT(*), COUNT(DISTINCT dim_store_unicode), COUNT(DISTINCT promoter_unicode), AVG(CASE WHEN start_status=1 THEN 1.0 ELSE 0.0 END)*100 FROM fact_store_execution WHERE EXTRACT(YEAR FROM arrange_date)={yr}").fetchone()
-    pts = con.execute(f"SELECT SUM(points_value), COUNT(DISTINCT dim_store_unicode) FROM fact_points WHERE EXTRACT(YEAR FROM points_date)={yr}").fetchone()
-    task = con.execute(f"SELECT COUNT(*), SUM(CASE WHEN status='PASS' THEN 1 ELSE 0 END) FROM fact_store_task WHERE EXTRACT(YEAR FROM exe_time)={yr}").fetchone()
-    proj_exec = con.execute(f"SELECT COUNT(DISTINCT project_unicode) FROM fact_store_execution WHERE EXTRACT(YEAR FROM arrange_date)={yr}").fetchone()
-    proj_cost = con.execute(f"SELECT COUNT(DISTINCT project_name) FROM fact_store_cost WHERE EXTRACT(YEAR FROM create_time)={yr}").fetchone()
-    top_stores = con.execute(f"""
-        SELECT ds.shop_name, SUM(fss.totalMoney) AS s FROM fact_store_sales fss
-        JOIN dim_store ds ON fss.dim_store_unicode=ds.store_unicode
-        WHERE EXTRACT(YEAR FROM fss.sales_date)={yr} GROUP BY ds.shop_name ORDER BY s DESC LIMIT 3
-    """).fetchall()
-    all_exec_stores = i(con.execute(f"SELECT COUNT(DISTINCT dim_store_unicode) FROM fact_store_execution WHERE EXTRACT(YEAR FROM arrange_date)={yr}").fetchone()[0])
+    yr1 = str(yr + 1)
+    yr_s = str(yr)
+
+    def _q(sql, default=(0,0)):
+        try:
+            return con.execute(sql).fetchone()
+        except Exception:
+            return default
+
+    # Use date-range filter which works regardless of column type (DATE/TIMESTAMP/VARCHAR)
+    cost = _q(f"SELECT SUM(total_short_term_expenses), COUNT(DISTINCT dim_store_unicode) FROM fact_store_cost WHERE create_time >= '{yr_s}-01-01' AND create_time < '{yr1}-01-01'")
+    sales = _q(f"SELECT SUM(totalMoney), COUNT(DISTINCT dim_store_unicode) FROM fact_store_sales WHERE project_unicode IN (SELECT project_unicode FROM dim_project WHERE start_time >= '{yr_s}-01-01' AND start_time < '{yr1}-01-01')")
+    exec_r = _q(f"SELECT COUNT(*), COUNT(DISTINCT dim_store_unicode), COUNT(DISTINCT promoter_unicode), AVG(CASE WHEN start_status=1 THEN 1.0 ELSE 0.0 END)*100 FROM fact_store_execution WHERE arrange_date >= '{yr_s}-01-01' AND arrange_date < '{yr1}-01-01'")
+    pts = _q(f"SELECT SUM(points_value), COUNT(DISTINCT dim_store_unicode) FROM fact_points WHERE points_date >= '{yr_s}-01-01' AND points_date < '{yr1}-01-01'")
+    task = _q(f"SELECT COUNT(*), SUM(CASE WHEN status='PASS' THEN 1 ELSE 0 END) FROM fact_store_task WHERE exe_time >= '{yr_s}-01-01' AND exe_time < '{yr1}-01-01'")
+    proj_exec = _q(f"SELECT COUNT(DISTINCT project_unicode) FROM fact_store_execution WHERE arrange_date >= '{yr_s}-01-01' AND arrange_date < '{yr1}-01-01'")
+    proj_cost = _q(f"SELECT COUNT(DISTINCT project_name) FROM fact_store_cost WHERE create_time >= '{yr_s}-01-01' AND create_time < '{yr1}-01-01'")
+    all_exec_stores = i(_q(f"SELECT COUNT(DISTINCT dim_store_unicode) FROM fact_store_execution WHERE arrange_date >= '{yr_s}-01-01' AND arrange_date < '{yr1}-01-01'")[0])
+    # Top stores via v_store_metrics (stable view)
+    try:
+        top = con.execute(f"SELECT shop_name, aligned_sales FROM v_store_metrics WHERE aligned_sales > 0 ORDER BY aligned_sales DESC LIMIT 3").fetchall()
+        top_str = ', '.join(f'{t[0][:12]} ¥{f(t[1]):,.0f}' for t in top)
+    except Exception:
+        top_str = '数据暂不可用'
+    exp_total = f(cost[0]) + f(pts[0])
+    s_total = f(sales[0])
     return {
         'cost_total': f(cost[0]), 'cost_stores': i(cost[1]),
-        'sales_total': f(sales[0]), 'sales_stores': i(sales[1]),
+        'sales_total': s_total, 'sales_stores': i(sales[1]),
         'exec_count': i(exec_r[0]), 'exec_stores': i(exec_r[1]), 'exec_promoters': i(exec_r[2]), 'exec_att': f(exec_r[3]),
         'pts_total': f(pts[0]), 'pts_stores': i(pts[1]),
         'task_total': i(task[0]), 'task_pass': i(task[1]), 'task_pass_rate': round(f(task[1])/max(f(task[0]),1)*100,1) if task[0] else 0,
         'proj_exec': i(proj_exec[0]), 'proj_cost': i(proj_cost[0]),
         'all_exec_stores': all_exec_stores,
         'zero_sales_pct': round((1-i(sales[1])/all_exec_stores)*100,1) if all_exec_stores>0 else 0,
-        'top_stores': ', '.join(f'{s[0][:12]} ¥{f(s[1]):,.0f}' for s in top_stores),
-        'exp_total': f(cost[0]) + f(pts[0]),
-        'roi': round(f(sales[0])/(f(cost[0])+f(pts[0])),3) if (f(cost[0])+f(pts[0]))>0 else 0,
+        'top_stores': top_str,
+        'exp_total': exp_total,
+        'roi': round(s_total/exp_total,3) if exp_total>0 else 0,
     }
 
 def ai_summary_store(s):
