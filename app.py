@@ -368,7 +368,7 @@ def get_store_kpi_by_year(store_unicode, year=None):
     """Get store cost/sales/execution KPIs filtered by year."""
     if year is None:
         return None
-    yr = str(year)
+    yr = int(year)
     cost = con.execute("""
         SELECT SUM(total_short_term_expenses) AS cost,
                SUM(wages) AS wages, SUM(incentive_bonuses) AS bonuses,
@@ -404,7 +404,7 @@ def get_store_kpi_by_year(store_unicode, year=None):
 
 def get_store_project_count_by_year(store_unicode, year):
     """Count distinct projects active in a given year for a store."""
-    yr = str(year)
+    yr = int(year)
     r = con.execute("""
         SELECT COUNT(DISTINCT proj) FROM (
             SELECT project_reconciliation_unicode AS proj FROM fact_store_cost WHERE dim_store_unicode=? AND EXTRACT(YEAR FROM create_time)=?
@@ -487,7 +487,7 @@ def get_promoter_kpi_by_year(promoter_unicode, year=None):
     """Get promoter cost/sales/execution KPIs filtered by year."""
     if year is None:
         return None
-    yr = str(year)
+    yr = int(year)
     cost = con.execute("""
         SELECT SUM(fsc.total_short_term_expenses) AS cost,
                SUM(fsc.wages) AS wages, SUM(fsc.incentive_bonuses) AS bonuses
@@ -561,22 +561,22 @@ def get_project_brand_activity_matrix():
 
 def _yr_stats():
     """Helper: query 2026 global stats, return dict of pre-converted values."""
-    yr = '2026'
+    yr = 2026
     f = lambda v: float(v) if v is not None else 0.0
     i = lambda v: int(v) if v is not None else 0
-    cost = con.execute(f"SELECT SUM(total_short_term_expenses), COUNT(DISTINCT dim_store_unicode) FROM fact_store_cost WHERE EXTRACT(YEAR FROM create_time)='{yr}'").fetchone()
-    sales = con.execute(f"SELECT SUM(totalMoney), COUNT(DISTINCT dim_store_unicode) FROM fact_store_sales WHERE EXTRACT(YEAR FROM sales_date)='{yr}'").fetchone()
-    exec_r = con.execute(f"SELECT COUNT(*), COUNT(DISTINCT dim_store_unicode), COUNT(DISTINCT promoter_unicode), AVG(CASE WHEN start_status=1 THEN 1.0 ELSE 0.0 END)*100 FROM fact_store_execution WHERE EXTRACT(YEAR FROM arrange_date)='{yr}'").fetchone()
-    pts = con.execute(f"SELECT SUM(points_value), COUNT(DISTINCT dim_store_unicode) FROM fact_points WHERE EXTRACT(YEAR FROM points_date)='{yr}'").fetchone()
-    task = con.execute(f"SELECT COUNT(*), SUM(CASE WHEN status='PASS' THEN 1 ELSE 0 END) FROM fact_store_task WHERE EXTRACT(YEAR FROM exe_time)='{yr}'").fetchone()
-    proj_exec = con.execute(f"SELECT COUNT(DISTINCT project_unicode) FROM fact_store_execution WHERE EXTRACT(YEAR FROM arrange_date)='{yr}'").fetchone()
-    proj_cost = con.execute(f"SELECT COUNT(DISTINCT project_name) FROM fact_store_cost WHERE EXTRACT(YEAR FROM create_time)='{yr}'").fetchone()
+    cost = con.execute(f"SELECT SUM(total_short_term_expenses), COUNT(DISTINCT dim_store_unicode) FROM fact_store_cost WHERE EXTRACT(YEAR FROM create_time)={yr}").fetchone()
+    sales = con.execute(f"SELECT SUM(totalMoney), COUNT(DISTINCT dim_store_unicode) FROM fact_store_sales WHERE EXTRACT(YEAR FROM sales_date)={yr}").fetchone()
+    exec_r = con.execute(f"SELECT COUNT(*), COUNT(DISTINCT dim_store_unicode), COUNT(DISTINCT promoter_unicode), AVG(CASE WHEN start_status=1 THEN 1.0 ELSE 0.0 END)*100 FROM fact_store_execution WHERE EXTRACT(YEAR FROM arrange_date)={yr}").fetchone()
+    pts = con.execute(f"SELECT SUM(points_value), COUNT(DISTINCT dim_store_unicode) FROM fact_points WHERE EXTRACT(YEAR FROM points_date)={yr}").fetchone()
+    task = con.execute(f"SELECT COUNT(*), SUM(CASE WHEN status='PASS' THEN 1 ELSE 0 END) FROM fact_store_task WHERE EXTRACT(YEAR FROM exe_time)={yr}").fetchone()
+    proj_exec = con.execute(f"SELECT COUNT(DISTINCT project_unicode) FROM fact_store_execution WHERE EXTRACT(YEAR FROM arrange_date)={yr}").fetchone()
+    proj_cost = con.execute(f"SELECT COUNT(DISTINCT project_name) FROM fact_store_cost WHERE EXTRACT(YEAR FROM create_time)={yr}").fetchone()
     top_stores = con.execute(f"""
         SELECT ds.shop_name, SUM(fss.totalMoney) AS s FROM fact_store_sales fss
         JOIN dim_store ds ON fss.dim_store_unicode=ds.store_unicode
-        WHERE EXTRACT(YEAR FROM fss.sales_date)='{yr}' GROUP BY ds.shop_name ORDER BY s DESC LIMIT 3
+        WHERE EXTRACT(YEAR FROM fss.sales_date)={yr} GROUP BY ds.shop_name ORDER BY s DESC LIMIT 3
     """).fetchall()
-    all_exec_stores = i(con.execute(f"SELECT COUNT(DISTINCT dim_store_unicode) FROM fact_store_execution WHERE EXTRACT(YEAR FROM arrange_date)='{yr}'").fetchone()[0])
+    all_exec_stores = i(con.execute(f"SELECT COUNT(DISTINCT dim_store_unicode) FROM fact_store_execution WHERE EXTRACT(YEAR FROM arrange_date)={yr}").fetchone()[0])
     return {
         'cost_total': f(cost[0]), 'cost_stores': i(cost[1]),
         'sales_total': f(sales[0]), 'sales_stores': i(sales[1]),
